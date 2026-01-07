@@ -18,16 +18,16 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MEMORIA DE SESIÓN (Coordenadas, Zoom y RESULTADOS) ---
+# --- 2. MEMORIA DE SESIÓN (Persistencia total) ---
 if 'lat' not in st.session_state:
     st.session_state.lat = -43.5320
 if 'lon' not in st.session_state:
     st.session_state.lon = 172.6306
 if 'zoom' not in st.session_state:
     st.session_state.zoom = 12
-# Nuevo: Guardamos los resultados para que no desaparezcan al cliquear
-if 'resultados' not in st.session_state:
-    st.session_state.resultados = None
+# NUEVO: Variable para guardar los resultados y que no desaparezcan
+if 'analysis_results' not in st.session_state:
+    st.session_state.analysis_results = None
 
 # --- 3. INFRAESTRUCTURA DE CONEXIÓN PERSISTENTE ---
 @st.cache_resource
@@ -101,7 +101,7 @@ if gee_status is not True:
     st.error(f"❌ Connection Failed: {gee_status}")
     st.stop()
 
-# --- 5. MAPA INTERACTIVO (Con Pin y Zoom Persistentes) ---
+# --- 5. MAPA INTERACTIVO (Con Zoom Persistente) ---
 st.subheader(l["map_sub"])
 m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=st.session_state.zoom)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
@@ -114,11 +114,11 @@ folium.Marker(
 
 map_data = st_folium(m, height=350, width="stretch", key="mapa_canterbury")
 
-# Captura de Zoom
+# Capturar Zoom
 if map_data and 'zoom' in map_data:
     st.session_state.zoom = map_data['zoom']
 
-# Lógica de Clic: Actualiza coordenadas y recarga SIN borrar resultados visuales
+# Capturar Clic y Recargar
 if map_data and map_data['last_clicked']:
     new_lat = map_data['last_clicked']['lat']
     new_lon = map_data['last_clicked']['lng']
@@ -167,19 +167,23 @@ def get_agronomic_data(lat, lon, start, end, rad):
     df = pd.DataFrame([f['properties'] for f in res['features']]).dropna()
     return df, col, p, is_urban
 
-# --- 8. LOGICA DE ACTUALIZACIÓN Y VISUALIZACIÓN ---
+# --- 8. DASHBOARD (PERSISTENCIA VISUAL) ---
 
-# Si se aprieta el botón, calculamos y guardamos en sesión
+# A) Si el usuario aprieta el botón, buscamos datos NUEVOS y los guardamos
 if btn_run:
     with st.spinner("🛰️ Synchronizing with Sentinel-2..."):
-        # Guardamos todo en un diccionario dentro de session_state
-        datos = get_agronomic_data(st.session_state.lat, st.session_state.lon, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'), radio)
-        st.session_state.resultados = datos
+        st.session_state.analysis_results = get_agronomic_data(
+            st.session_state.lat, 
+            st.session_state.lon, 
+            rango[0].strftime('%Y-%m-%d'), 
+            rango[1].strftime('%Y-%m-%d'), 
+            radio
+        )
 
-# Si hay resultados guardados (ya sea de ahora o de antes), los mostramos
-if st.session_state.resultados is not None:
-    # Desempaquetamos los datos guardados
-    df_raw, col_global, p_ee, urban_flag = st.session_state.resultados
+# B) Si hay datos guardados en memoria, los mostramos SIEMPRE (incluso al mover el pin)
+if st.session_state.analysis_results is not None:
+    # Recuperamos los datos de la memoria
+    df_raw, col_global, p_ee, urban_flag = st.session_state.analysis_results
     
     if urban_flag: st.warning(l["city_warn"])
     
@@ -188,6 +192,7 @@ if st.session_state.resultados is not None:
         df['fecha'] = pd.to_datetime(df['fecha'])
         df = df.sort_values('fecha')
         mult = 0 if urban_flag else 1
+        # Recalculamos biomasa "al vuelo" para que los sliders funcionen rápido sin recargar satélite
         df['kg_dm_ha'] = (((df['ndvi'] * slope) - intercept) * mult).clip(lower=0)
         
         # Suavizado de curva
@@ -223,7 +228,6 @@ if st.session_state.resultados is not None:
             img_ee = col_global.filterDate(fecha_sel, (pd.to_datetime(fecha_sel) + timedelta(days=1)).strftime('%Y-%m-%d')).first()
             if img_ee:
                 viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green']) if modo_ndvi else img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
-                # Usamos el buffer guardado en la sesión para la imagen
                 url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
                 st.image(url_t, width="stretch")
 
