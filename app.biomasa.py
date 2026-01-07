@@ -28,7 +28,7 @@ if 'zoom' not in st.session_state: st.session_state.zoom = 12
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
 if 'url_cache' not in st.session_state: st.session_state.url_cache = {}
 
-# Variables para detectar cambios (Lat, Lon Y AHORA RADIO)
+# Variables para detectar cambios y auto-ejecutar
 if 'last_calc_lat' not in st.session_state: st.session_state.last_calc_lat = 0
 if 'last_calc_lon' not in st.session_state: st.session_state.last_calc_lon = 0
 if 'last_calc_radio' not in st.session_state: st.session_state.last_calc_radio = 0
@@ -111,7 +111,11 @@ slope = st.sidebar.slider(l["slope_label"], 3000, 7500, especies[esp_n]["s"])
 intercept = st.sidebar.slider(l["intercept_label"], 500, 2000, especies[esp_n]["i"])
 cons_v = st.sidebar.slider(l["cons_vaca"], 10, 25, especies[esp_n]["c"])
 dias_rot = st.sidebar.slider(l["rotacion"], 1, 100, especies[esp_n]["r"])
+
+# SLIDERS DE CONTROL DE IMAGEN
 radio = st.sidebar.slider("Analysis Radius / Radio (m)", 10, 500, 100)
+# Slider Movido al Sidebar por pedido
+zoom_contexto = st.sidebar.slider("🔍 Image Context Zoom (x)", 1.0, 10.0, 3.0, 0.5)
 
 btn_run = st.sidebar.button(l["btn_run"], type="primary", use_container_width=True)
 
@@ -142,7 +146,6 @@ if btn_run or params_changed:
     st.session_state.url_cache = {} 
     with st.spinner("🛰️ Scanning paddock..."):
         st.session_state.analysis_results = get_agronomic_data(st.session_state.lat, st.session_state.lon, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'), radio)
-        # Actualizamos todos los estados de referencia
         st.session_state.last_calc_lat = st.session_state.lat
         st.session_state.last_calc_lon = st.session_state.lon
         st.session_state.last_calc_radio = radio
@@ -186,10 +189,7 @@ if st.session_state.analysis_results is not None:
 
         c_img, c_met = st.columns([1.6, 1])
         with c_img:
-            # SLIDER DE ZOOM DE CONTEXTO (VISUAL)
-            zoom_contexto = st.slider("🔍 Image Zoom (Context)", 1.0, 10.0, 5.0, 0.5)
-            
-            # CACHÉ QUE INCLUYE EL ZOOM Y EL RADIO
+            # CACHÉ que incluye el ZOOM del sidebar
             cache_key = f"{fecha_sel}_{modo_ndvi}_{radio}_{zoom_contexto}"
             
             if cache_key in st.session_state.url_cache:
@@ -200,7 +200,7 @@ if st.session_state.analysis_results is not None:
                 if img_ee:
                     viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green']) if modo_ndvi else img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
                     
-                    # AQUÍ APLICAMOS EL ZOOM DE CONTEXTO (radio * zoom_contexto)
+                    # Generamos imagen con el zoom de contexto seleccionado en el sidebar
                     url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * zoom_contexto).bounds(), 'format': 'png'})
                     
                     st.session_state.url_cache[cache_key] = url_t
