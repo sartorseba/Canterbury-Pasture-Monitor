@@ -18,19 +18,15 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MEMORIA DE SESIÓN (Persistencia total) ---
-# Coordenadas del PIN (El dato del lote)
+# --- 2. MEMORIA DE SESIÓN ---
 if 'lat' not in st.session_state: st.session_state.lat = -43.5320
 if 'lon' not in st.session_state: st.session_state.lon = 172.6306
-
-# Coordenadas de la VISTA (Dónde está mirando el usuario - Nueva variable clave)
 if 'map_center' not in st.session_state: st.session_state.map_center = [-43.5320, 172.6306]
 if 'zoom' not in st.session_state: st.session_state.zoom = 12
-
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
 if 'url_cache' not in st.session_state: st.session_state.url_cache = {}
 
-# --- 3. INFRAESTRUCTURA DE CONEXIÓN PERSISTENTE ---
+# --- 3. CONEXIÓN ---
 @st.cache_resource
 def iniciar_conexion_gee():
     try:
@@ -49,7 +45,7 @@ if gee_status is not True:
     st.error(f"❌ Connection Failed: {gee_status}")
     st.stop()
 
-# --- 4. DICCIONARIO BILINGÜE COMPLETO ---
+# --- 4. DICCIONARIO ---
 tr = {
     "en": {"title": "🇳🇿 Satellite Biomass Monitor - Canterbury", "map_sub": "🗺️ Click on the map to select your paddock", "side_agron": "🌱 Pasture Configuration", "period": "Analysis Period", "specie": "Forage Species", "slope_label": "Slope (m)", "intercept_label": "Intercept (b)", "cons_vaca": "Intake (kg DM/cow/day)", "rotacion": "Rotation Days (Rest)", "audit": "📅 Capture Audit", "switch_label": "View NDVI Layer (On) / Visible RGB (Off)", "city_warn": "⚠️ Urban area detected. Production set to 0 for accuracy.", "sem_title": "🚦 Sustainable Stocking Rate", "sem_formula": "Carrying Capacity Formula:", "metric_bio_last": "Last Detected Biomass", "metric_bio_sel": "Biomass on Selected Date", "metric_tasa": "Growth Rate", "metric_avg": "Period Average", "btn_run": "🚀 Run Analysis", "download": "📥 Download CSV Report"},
     "es": {"title": "🇳🇿 Monitor de Biomasa Satelital - Canterbury", "map_sub": "🗺️ Haz clic en el mapa para seleccionar tu lote", "side_agron": "🌱 Configuración de Pastura", "period": "Período de Análisis", "specie": "Especie Forrajera", "slope_label": "Pendiente (m)", "intercept_label": "Intercepto (b)", "cons_vaca": "Consumo (kg MS/vaca/día)", "rotacion": "Días de Rotación (Descanso)", "audit": "📅 Auditoría de Captura", "switch_label": "Ver Capa NDVI (Encendido) / Satélite Real (Apagado)", "city_warn": "⚠️ Zona urbana detectada. Producción seteada en cero por precisión.", "sem_title": "🚦 Carga Animal Sustentable", "sem_formula": "Fórmula de Carga Soportable:", "metric_bio_last": "Última Biomasa Detectada", "metric_bio_sel": "Biomasa en Fecha Seleccionada", "metric_tasa": "Tasa de Crecimiento", "metric_avg": "Promedio del Período", "btn_run": "🚀 Ejecutar Análisis", "download": "📥 Descargar Reporte CSV"}
@@ -59,41 +55,45 @@ idioma_opt = st.sidebar.selectbox("🌐 Language / Idioma", ["English", "Españo
 l = tr["en"] if idioma_opt == "English" else tr["es"]
 st.title(l["title"])
 
-# --- 5. MAPA INTERACTIVO (MOVIMIENTO NATURAL) ---
+# --- 5. MAPA INTERACTIVO (Optimizado para 1 Clic) ---
 st.subheader(l["map_sub"])
 
-# El mapa se inicia donde el usuario estaba mirando (map_center), NO donde está el pin
 m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
 
-# El PIN se dibuja en su coordenada específica
 folium.Marker(
     [st.session_state.lat, st.session_state.lon], 
     popup="Selected Paddock", 
     icon=folium.Icon(color="red", icon="info-sign")
 ).add_to(m)
 
-map_data = st_folium(m, height=350, width="stretch", key="mapa_canterbury")
+# OPTIMIZACIÓN CLAVE: returned_objects reduce el tráfico de datos y hace el clic instantáneo
+map_data = st_folium(
+    m, 
+    height=350, 
+    width="stretch", 
+    key="mapa_canterbury", 
+    returned_objects=["last_clicked", "center", "zoom"]
+)
 
-# --- LÓGICA DE ACTUALIZACIÓN FLUIDA ---
 if map_data:
     should_rerun = False
     
-    # 1. Actualizamos dónde está mirando el usuario (sin provocar recargas innecesarias)
-    if 'center' in map_data:
+    # Actualizar vista (sin rerun forzado, fluye natural)
+    if map_data.get('center'):
         st.session_state.map_center = [map_data['center']['lat'], map_data['center']['lng']]
-    if 'zoom' in map_data:
+    if map_data.get('zoom'):
         st.session_state.zoom = map_data['zoom']
 
-    # 2. Detectamos clic para mover el PIN
+    # Actualizar Pin (con rerun para mostrarlo YA)
     if map_data.get('last_clicked'):
-        clicked_lat = map_data['last_clicked']['lat']
-        clicked_lon = map_data['last_clicked']['lng']
+        new_lat = map_data['last_clicked']['lat']
+        new_lon = map_data['last_clicked']['lng']
         
-        # Solo si la coordenada es nueva, actualizamos el pin y recargamos
-        if clicked_lat != st.session_state.lat or clicked_lon != st.session_state.lon:
-            st.session_state.lat = clicked_lat
-            st.session_state.lon = clicked_lon
+        # Solo actualizamos si cambió la posición
+        if new_lat != st.session_state.lat or new_lon != st.session_state.lon:
+            st.session_state.lat = new_lat
+            st.session_state.lon = new_lon
             should_rerun = True
     
     if should_rerun:
@@ -104,11 +104,10 @@ st.sidebar.header(l["side_agron"])
 lat_in = st.sidebar.number_input("Lat", value=st.session_state.lat, format="%.4f")
 lon_in = st.sidebar.number_input("Lon", value=st.session_state.lon, format="%.4f")
 
-# Sincronización manual: Si escribís a mano, ahí sí forzamos que el mapa vaya a ese lugar
 if lat_in != st.session_state.lat or lon_in != st.session_state.lon:
     st.session_state.lat = lat_in
     st.session_state.lon = lon_in
-    st.session_state.map_center = [lat_in, lon_in] # Forzar vista al nuevo punto
+    st.session_state.map_center = [lat_in, lon_in]
     st.rerun()
 
 rango = st.sidebar.date_input(l["period"], value=(datetime(2025,9,1), datetime(2026,1,7)))
@@ -187,7 +186,6 @@ if st.session_state.analysis_results is not None:
 
         c_img, c_met = st.columns([1.6, 1])
         with c_img:
-            # CACHÉ ANTI-PARPADEO
             cache_key = f"{fecha_sel}_{modo_ndvi}"
             if cache_key in st.session_state.url_cache:
                 url_t = st.session_state.url_cache[cache_key]
