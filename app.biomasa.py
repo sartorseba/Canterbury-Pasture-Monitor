@@ -20,6 +20,7 @@ st.markdown("""
 
 # --- 2. MOTOR DE CONEXIÓN (Local & Cloud) ---
 def conectar_gee():
+    # Intento 1: Local (Tu MacBook con token guardado)
     try:
         ee.Initialize(project='nz-biomass')
         st.sidebar.success("✅ GEE Local Connected")
@@ -27,6 +28,7 @@ def conectar_gee():
     except:
         pass 
 
+    # Intento 2: Nube (Streamlit Cloud usando Secrets)
     try:
         gee_json = st.secrets.get("GEE_JSON")
         if gee_json:
@@ -145,7 +147,6 @@ if not df_raw.empty:
     mult = 0 if urban_flag else 1
     df['kg_dm_ha'] = (((df['ndvi'] * slope) - intercept) * mult).clip(lower=0)
     
-    # SUAVIZADO: Interpolación + Media móvil
     df['clean_bio'] = df['kg_dm_ha']
     df.loc[df['kg_dm_ha'] < (df['kg_dm_ha'].rolling(3).mean() * 0.6), 'clean_bio'] = None
     df['tendencia'] = df['clean_bio'].interpolate().rolling(window=7, center=True, min_periods=1).mean()
@@ -166,12 +167,11 @@ if not df_raw.empty:
 
     st.divider()
     
-    # 8. AUDITORÍA Y SEMÁFORO
     c_sel, c_tog = st.columns([3, 1])
     with c_sel:
         fecha_sel = st.select_slider(l["audit"], options=df['fecha'].dt.strftime('%Y-%m-%d').tolist())
     with c_tog:
-        modo_ndvi = st.toggle(l["switch_label"], value=False) # POR DEFECTO APAGADO (SATELLITE RGB)
+        modo_ndvi = st.toggle(l["switch_label"], value=False)
         
     dato = df[df['fecha'].dt.strftime('%Y-%m-%d') == fecha_sel].iloc[0]
 
@@ -182,8 +182,10 @@ if not df_raw.empty:
             viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green'])
         else:
             viz = img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
+        
+        # FIX 2026: Cambiamos 'use_container_width=True' por 'width="stretch"'
         url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
-        st.image(url_t, use_container_width=True)
+        st.image(url_t, width="stretch")
 
     with c_met:
         st.subheader(l["sem_title"])
@@ -191,7 +193,6 @@ if not df_raw.empty:
         tasa_c = dato['tasa'] if not pd.isna(dato['tasa']) else 0
         carga = (tasa_c + ((bio_c - 1500) / dias_rot)) / cons_v if cons_v > 0 else 0
         
-        # SEMÁFORO PROFESIONAL
         if carga > 3.5: st.success(f"SURPLUS ({carga:.1f} cows/ha)")
         elif carga > 1.5: st.warning(f"EQUILIBRIUM ({carga:.1f} cows/ha)")
         else: st.error(f"DEFICIT ({carga:.1f} cows/ha)")
@@ -203,4 +204,3 @@ if not df_raw.empty:
         st.metric(l["metric_tasa"], f"{tasa_c:.1f} kg/day")
 
     st.sidebar.download_button(l["download"], df.to_csv(index=False).encode('utf-8'), "pasture_report.csv", "text/csv")
-    
