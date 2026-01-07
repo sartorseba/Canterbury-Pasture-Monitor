@@ -1,6 +1,10 @@
+```text
 streamlit
 earthengine-api
 pandas
 matplotlib
 folium
 streamlit-folium
+geemap
+branca
+jinja2
