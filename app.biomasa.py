@@ -7,7 +7,7 @@ import folium
 import json
 from datetime import datetime, timedelta
 
-# --- 1. CONFIGURACIÓN Y ESTILO ---
+# --- 1. CONFIGURACIÓN Y ESTILO (Estándar 2026) ---
 st.set_page_config(page_title="NZ Pasture Monitor", layout="wide")
 
 st.markdown("""
@@ -96,16 +96,26 @@ if gee_status is not True:
     st.error(f"❌ Connection Failed: {gee_status}")
     st.stop()
 
-# --- 5. MAPA INTERACTIVO ---
+# --- 5. MAPA INTERACTIVO CON PIN ---
 st.subheader(l["map_sub"])
 m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=12)
-folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid').add_to(m)
+folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
+
+# AGREGAMOS EL PIN VISUAL AQUÍ
+folium.Marker(
+    [st.session_state.lat, st.session_state.lon], 
+    popup="Selected Paddock", 
+    icon=folium.Icon(color="red", icon="info-sign")
+).add_to(m)
+
 map_data = st_folium(m, height=350, width="stretch")
 
-# Actualizar sesión si hay clic
+# Actualizar sesión si hay clic y recargar para mover el pin
 if map_data and map_data['last_clicked']:
-    st.session_state.lat = map_data['last_clicked']['lat']
-    st.session_state.lon = map_data['last_clicked']['lng']
+    if map_data['last_clicked']['lat'] != st.session_state.lat or map_data['last_clicked']['lng'] != st.session_state.lon:
+        st.session_state.lat = map_data['last_clicked']['lat']
+        st.session_state.lon = map_data['last_clicked']['lng']
+        st.rerun()
 
 # --- 6. SIDEBAR (ENTRADAS AGRONÓMICAS) ---
 st.sidebar.header(l["side_agron"])
@@ -133,11 +143,9 @@ def get_agronomic_data(lat, lon, start, end, rad):
     p = ee.Geometry.Point([lon, lat])
     roi = p.buffer(rad)
     
-    # Filtro Urbano (ESA WorldCover)
     lc = ee.Image("ESA/WorldCover/v200/2021").clip(roi)
     is_urban = ee.Number(lc.eq(50).reduceRegion(ee.Reducer.mean(), roi, 20).get('Map')).gt(0.35).getInfo()
 
-    # Colección Sentinel-2
     col = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(roi)
            .filterDate(start, end).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
            .map(lambda img: img.addBands(img.normalizedDifference(['B8', 'B4']).rename('NDVI'))))
