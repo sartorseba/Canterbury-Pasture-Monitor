@@ -85,7 +85,7 @@ tr = {
     }
 }
 
-idioma_opt = st.sidebar.selectbox("🌐 Language", ["English", "Español"], index=0)
+idioma_opt = st.sidebar.selectbox("🌐 Language / Idioma", ["English", "Español"], index=0)
 l = tr["en"] if idioma_opt == "English" else tr["es"]
 st.title(l["title"])
 
@@ -93,16 +93,17 @@ st.title(l["title"])
 st.subheader(l["map_sub"])
 m = folium.Map(location=[-43.5320, 172.6306], zoom_start=12)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
+m.add_child(folium.LatLngPopup())
 map_data = st_folium(m, height=350, width=1200)
 
 lat_act, lon_act = (map_data['last_clicked']['lat'], map_data['last_clicked']['lng']) if map_data and map_data['last_clicked'] else (-43.5320, 172.6306)
 
-# --- 5. SIDEBAR (Optimizado para 2026) ---
+# --- 5. SIDEBAR ---
 st.sidebar.header(l["side_agron"])
 lat = st.sidebar.number_input("Lat", value=lat_act, format="%.4f")
 lon = st.sidebar.number_input("Lon", value=lon_act, format="%.4f")
 
-# OPTIMIZACIÓN: Rango por defecto de 4 meses (Septiembre 2025 a Enero 2026) para carga instantánea
+# OPTIMIZACIÓN: Rango inicial de 4 meses para que la app sea instantánea
 rango = st.sidebar.date_input(l["period"], value=(datetime(2025,9,1), datetime(2026,1,7)))
 
 especies = {
@@ -128,6 +129,7 @@ def get_analysis(lat, lon, start, end, rad):
            .filterDate(start, end).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
            .map(lambda img: img.addBands(img.normalizedDifference(['B8', 'B4']).rename('NDVI'))))
     
+    # El comando .getInfo() es el que causa la demora; menos fechas = más velocidad
     res = col.map(lambda img: ee.Feature(None, {'fecha': img.date().format('YYYY-MM-dd'), 
                                                'ndvi': img.reduceRegion(ee.Reducer.mean(), roi, 10).get('NDVI')})).getInfo()
     df = pd.DataFrame([f['properties'] for f in res['features']]).dropna()
@@ -183,10 +185,11 @@ if not df_raw.empty:
             else:
                 viz = img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
             
+            # Usamos width="stretch" para cumplir con el estándar de 2026
             url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
             st.image(url_t, width="stretch")
         except:
-            st.info("🛰️ Sensing imagery... (Validating GEE cloud permissions)")
+            st.info("🛰️ Processing satellite image... (Generating visual preview)")
 
     with c_met:
         st.subheader(l["sem_title"])
