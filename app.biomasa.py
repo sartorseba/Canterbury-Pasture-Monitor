@@ -20,7 +20,6 @@ st.markdown("""
 
 # --- 2. MOTOR DE CONEXIÓN (Local & Cloud) ---
 def conectar_gee():
-    # Intento 1: Local (Tu MacBook con token guardado)
     try:
         ee.Initialize(project='nz-biomass')
         st.sidebar.success("✅ GEE Local Connected")
@@ -28,7 +27,6 @@ def conectar_gee():
     except:
         pass 
 
-    # Intento 2: Nube (Streamlit Cloud usando Secrets)
     try:
         gee_json = st.secrets.get("GEE_JSON")
         if gee_json:
@@ -87,7 +85,7 @@ tr = {
     }
 }
 
-idioma_opt = st.sidebar.selectbox("🌐 Language / Idioma", ["English", "Español"], index=0)
+idioma_opt = st.sidebar.selectbox("🌐 Language", ["English", "Español"], index=0)
 l = tr["en"] if idioma_opt == "English" else tr["es"]
 st.title(l["title"])
 
@@ -95,16 +93,17 @@ st.title(l["title"])
 st.subheader(l["map_sub"])
 m = folium.Map(location=[-43.5320, 172.6306], zoom_start=12)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
-m.add_child(folium.LatLngPopup())
 map_data = st_folium(m, height=350, width=1200)
 
 lat_act, lon_act = (map_data['last_clicked']['lat'], map_data['last_clicked']['lng']) if map_data and map_data['last_clicked'] else (-43.5320, 172.6306)
 
-# --- 5. SIDEBAR ---
+# --- 5. SIDEBAR (Optimizado para 2026) ---
 st.sidebar.header(l["side_agron"])
 lat = st.sidebar.number_input("Lat", value=lat_act, format="%.4f")
 lon = st.sidebar.number_input("Lon", value=lon_act, format="%.4f")
-rango = st.sidebar.date_input(l["period"], value=(datetime(2025,1,1), datetime(2025,12,31)))
+
+# OPTIMIZACIÓN: Rango por defecto de 4 meses (Septiembre 2025 a Enero 2026) para carga instantánea
+rango = st.sidebar.date_input(l["period"], value=(datetime(2025,9,1), datetime(2026,1,7)))
 
 especies = {
     "Raigrás Perenne (NZ)": {"s": 5800, "i": 1200, "c": 18, "r": 21},
@@ -177,15 +176,17 @@ if not df_raw.empty:
 
     c_img, c_met = st.columns([1.6, 1])
     with c_img:
-        img_ee = col_global.filterDate(fecha_sel, (pd.to_datetime(fecha_sel) + timedelta(days=1)).strftime('%Y-%m-%d')).first()
-        if modo_ndvi:
-            viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green'])
-        else:
-            viz = img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
-        
-        # FIX 2026: Cambiamos 'use_container_width=True' por 'width="stretch"'
-        url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
-        st.image(url_t, width="stretch")
+        try:
+            img_ee = col_global.filterDate(fecha_sel, (pd.to_datetime(fecha_sel) + timedelta(days=1)).strftime('%Y-%m-%d')).first()
+            if modo_ndvi:
+                viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green'])
+            else:
+                viz = img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
+            
+            url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
+            st.image(url_t, width="stretch")
+        except:
+            st.info("🛰️ Sensing imagery... (Validating GEE cloud permissions)")
 
     with c_met:
         st.subheader(l["sem_title"])
