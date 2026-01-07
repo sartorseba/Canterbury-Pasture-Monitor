@@ -18,11 +18,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MEMORIA DE SESIÓN (Persistencia de coordenadas) ---
+# --- 2. MEMORIA DE SESIÓN (Persistencia de coordenadas y zoom) ---
 if 'lat' not in st.session_state:
     st.session_state.lat = -43.5320
 if 'lon' not in st.session_state:
     st.session_state.lon = 172.6306
+# Clave para tu pedido: guardamos el zoom actual
+if 'zoom' not in st.session_state:
+    st.session_state.zoom = 12
 
 # --- 3. INFRAESTRUCTURA DE CONEXIÓN PERSISTENTE ---
 @st.cache_resource
@@ -96,25 +99,33 @@ if gee_status is not True:
     st.error(f"❌ Connection Failed: {gee_status}")
     st.stop()
 
-# --- 5. MAPA INTERACTIVO CON PIN ---
+# --- 5. MAPA INTERACTIVO (Con Zoom Persistente) ---
 st.subheader(l["map_sub"])
-m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=12)
+# Iniciamos el mapa con el zoom guardado en session_state
+m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=st.session_state.zoom)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
 
-# AGREGAMOS EL PIN VISUAL AQUÍ
 folium.Marker(
     [st.session_state.lat, st.session_state.lon], 
     popup="Selected Paddock", 
     icon=folium.Icon(color="red", icon="info-sign")
 ).add_to(m)
 
-map_data = st_folium(m, height=350, width="stretch")
+# El mapa ahora usa una clave única para mantener su estado
+map_data = st_folium(m, height=350, width="stretch", key="mapa_canterbury")
 
-# Actualizar sesión si hay clic y recargar para mover el pin
+# Capturamos el zoom que el usuario está usando actualmente
+if map_data and 'zoom' in map_data:
+    st.session_state.zoom = map_data['zoom']
+
+# Actualizar sesión si hay clic, manteniendo el zoom actual
 if map_data and map_data['last_clicked']:
-    if map_data['last_clicked']['lat'] != st.session_state.lat or map_data['last_clicked']['lng'] != st.session_state.lon:
-        st.session_state.lat = map_data['last_clicked']['lat']
-        st.session_state.lon = map_data['last_clicked']['lng']
+    new_lat = map_data['last_clicked']['lat']
+    new_lon = map_data['last_clicked']['lng']
+    if new_lat != st.session_state.lat or new_lon != st.session_state.lon:
+        st.session_state.lat = new_lat
+        st.session_state.lon = new_lon
+        # Al recargar, usará el st.session_state.zoom actualizado arriba
         st.rerun()
 
 # --- 6. SIDEBAR (ENTRADAS AGRONÓMICAS) ---
@@ -142,7 +153,6 @@ btn_run = st.sidebar.button(l["btn_run"], type="primary", use_container_width=Tr
 def get_agronomic_data(lat, lon, start, end, rad):
     p = ee.Geometry.Point([lon, lat])
     roi = p.buffer(rad)
-    
     lc = ee.Image("ESA/WorldCover/v200/2021").clip(roi)
     is_urban = ee.Number(lc.eq(50).reduceRegion(ee.Reducer.mean(), roi, 20).get('Map')).gt(0.35).getInfo()
 
@@ -178,7 +188,7 @@ if btn_run:
             df['tendencia'] = df['clean'].interpolate().rolling(window=7, center=True, min_periods=1).mean()
             df['tasa'] = df['tendencia'].diff() / df['fecha'].diff().dt.days
 
-            # 1. Gráfico Principal
+            # Gráfico Principal
             avg_p = df['tendencia'].mean()
             col_g1, col_g2 = st.columns([3, 1])
             with col_g1:
@@ -193,7 +203,7 @@ if btn_run:
 
             st.divider()
             
-            # 2. Auditoría e Imagen
+            # Auditoría Satelital
             c_sel, c_tog = st.columns([3, 1])
             with c_sel: fecha_sel = st.select_slider(l["audit"], options=df['fecha'].dt.strftime('%Y-%m-%d').tolist())
             with c_tog: modo_ndvi = st.toggle(l["switch_label"], value=False)
