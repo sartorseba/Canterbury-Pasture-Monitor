@@ -4,10 +4,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from streamlit_folium import st_folium
 import folium
+from folium.plugins import MiniMap # Plugin profesional de contexto
 import json
 from datetime import datetime, timedelta
 
-# --- 1. CONFIGURACIÓN Y ESTILO ---
+# --- 1. CONFIGURACIÓN Y ESTILO (Estándar 2026) ---
 st.set_page_config(page_title="NZ Pasture Monitor", layout="wide")
 
 st.markdown("""
@@ -19,13 +20,19 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 2. MEMORIA DE SESIÓN ---
+# Coordenadas y Estado del Mapa
 if 'lat' not in st.session_state: st.session_state.lat = -43.5320
 if 'lon' not in st.session_state: st.session_state.lon = 172.6306
-# El centro del mapa inicia donde el usuario mira
 if 'map_center' not in st.session_state: st.session_state.map_center = [-43.5320, 172.6306]
 if 'zoom' not in st.session_state: st.session_state.zoom = 12
+
+# Datos y Caché
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
 if 'url_cache' not in st.session_state: st.session_state.url_cache = {}
+
+# Variables para detectar cambios y auto-ejecutar
+if 'last_calc_lat' not in st.session_state: st.session_state.last_calc_lat = 0
+if 'last_calc_lon' not in st.session_state: st.session_state.last_calc_lon = 0
 
 # --- 3. CONEXIÓN ---
 @st.cache_resource
@@ -48,28 +55,29 @@ if gee_status is not True:
 
 # --- 4. DICCIONARIO ---
 tr = {
-    "en": {"title": "🇳🇿 Satellite Biomass Monitor - Canterbury", "map_sub": "🗺️ Click on the map to select your paddock", "side_agron": "🌱 Pasture Configuration", "period": "Analysis Period", "specie": "Forage Species", "slope_label": "Slope (m)", "intercept_label": "Intercept (b)", "cons_vaca": "Intake (kg DM/cow/day)", "rotacion": "Rotation Days (Rest)", "audit": "📅 Capture Audit", "switch_label": "View NDVI Layer (On) / Visible RGB (Off)", "city_warn": "⚠️ Urban area detected. Production set to 0 for accuracy.", "sem_title": "🚦 Sustainable Stocking Rate", "sem_formula": "Carrying Capacity Formula:", "metric_bio_last": "Last Detected Biomass", "metric_bio_sel": "Biomass on Selected Date", "metric_tasa": "Growth Rate", "metric_avg": "Period Average", "btn_run": "🚀 Run Analysis", "download": "📥 Download CSV Report"},
-    "es": {"title": "🇳🇿 Monitor de Biomasa Satelital - Canterbury", "map_sub": "🗺️ Haz clic en el mapa para seleccionar tu lote", "side_agron": "🌱 Configuración de Pastura", "period": "Período de Análisis", "specie": "Especie Forrajera", "slope_label": "Pendiente (m)", "intercept_label": "Intercepto (b)", "cons_vaca": "Consumo (kg MS/vaca/día)", "rotacion": "Días de Rotación (Descanso)", "audit": "📅 Auditoría de Captura", "switch_label": "Ver Capa NDVI (Encendido) / Satélite Real (Apagado)", "city_warn": "⚠️ Zona urbana detectada. Producción seteada en cero por precisión.", "sem_title": "🚦 Carga Animal Sustentable", "sem_formula": "Fórmula de Carga Soportable:", "metric_bio_last": "Última Biomasa Detectada", "metric_bio_sel": "Biomasa en Fecha Seleccionada", "metric_tasa": "Tasa de Crecimiento", "metric_avg": "Promedio del Período", "btn_run": "🚀 Ejecutar Análisis", "download": "📥 Descargar Reporte CSV"}
+    "en": {"title": "🇳🇿 Satellite Biomass Monitor - Canterbury", "map_sub": "🗺️ Paddock Selection", "side_agron": "🌱 Pasture Configuration", "period": "Analysis Period", "specie": "Forage Species", "slope_label": "Slope (m)", "intercept_label": "Intercept (b)", "cons_vaca": "Intake (kg DM/cow/day)", "rotacion": "Rotation Days (Rest)", "audit": "📅 Capture Audit", "switch_label": "View NDVI Layer (On) / Visible RGB (Off)", "city_warn": "⚠️ Urban area detected. Production set to 0 for accuracy.", "sem_title": "🚦 Sustainable Stocking Rate", "sem_formula": "Carrying Capacity Formula:", "metric_bio_last": "Last Detected Biomass", "metric_bio_sel": "Biomass on Selected Date", "metric_tasa": "Growth Rate", "metric_avg": "Period Average", "btn_run": "🚀 Force Analysis", "download": "📥 Download CSV Report"},
+    "es": {"title": "🇳🇿 Monitor de Biomasa Satelital - Canterbury", "map_sub": "🗺️ Selección de Lote", "side_agron": "🌱 Configuración de Pastura", "period": "Período de Análisis", "specie": "Especie Forrajera", "slope_label": "Pendiente (m)", "intercept_label": "Intercepto (b)", "cons_vaca": "Consumo (kg MS/vaca/día)", "rotacion": "Días de Rotación (Descanso)", "audit": "📅 Auditoría de Captura", "switch_label": "Ver Capa NDVI (Encendido) / Satélite Real (Apagado)", "city_warn": "⚠️ Zona urbana detectada. Producción seteada en cero por precisión.", "sem_title": "🚦 Carga Animal Sustentable", "sem_formula": "Fórmula de Carga Soportable:", "metric_bio_last": "Última Biomasa Detectada", "metric_bio_sel": "Biomasa en Fecha Seleccionada", "metric_tasa": "Tasa de Crecimiento", "metric_avg": "Promedio del Período", "btn_run": "🚀 Forzar Análisis", "download": "📥 Descargar Reporte CSV"}
 }
 
 idioma_opt = st.sidebar.selectbox("🌐 Language / Idioma", ["English", "Español"], index=0)
 l = tr["en"] if idioma_opt == "English" else tr["es"]
 st.title(l["title"])
 
-# --- 5. MAPA INTERACTIVO PRO (Optimizado) ---
+# --- 5. MAPA INTERACTIVO (Natural + Contexto) ---
 st.subheader(l["map_sub"])
 
 m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
 
-# El Pin sigue la lógica de datos
+# Plugin de MiniMap (Zoom de Contexto)
+MiniMap(tile_layer='OpenStreetMap', toggle_display=True, position='bottomright').add_to(m)
+
 folium.Marker(
     [st.session_state.lat, st.session_state.lon], 
     popup="Selected Paddock", 
     icon=folium.Icon(color="red", icon="info-sign")
 ).add_to(m)
 
-# FIX DINÁMICA NATURAL: "returned_objects" evita la carga pesada al hacer zoom
 map_data = st_folium(
     m, 
     height=350, 
@@ -78,40 +86,36 @@ map_data = st_folium(
     returned_objects=["last_clicked", "center", "zoom"]
 )
 
-# Lógica de Actualización Silenciosa
+# Lógica de Actualización de Vista y Pin
 if map_data:
-    changed = False
+    should_rerun = False
     
-    # Actualizamos donde mira el usuario (Zoom/Pan)
-    if map_data.get('zoom') and map_data['zoom'] != st.session_state.zoom:
-        st.session_state.zoom = map_data['zoom']
-        # No hacemos rerun aquí, dejamos que fluya natural
-        
-    if map_data.get('center'):
-        st.session_state.map_center = [map_data['center']['lat'], map_data['center']['lng']]
+    if map_data.get('center'): st.session_state.map_center = [map_data['center']['lat'], map_data['center']['lng']]
+    if map_data.get('zoom'): st.session_state.zoom = map_data['zoom']
 
-    # Solo hacemos RERUN si cambia el PIN (Clic explícito)
     if map_data.get('last_clicked'):
         new_lat = map_data['last_clicked']['lat']
         new_lon = map_data['last_clicked']['lng']
         if new_lat != st.session_state.lat or new_lon != st.session_state.lon:
             st.session_state.lat = new_lat
             st.session_state.lon = new_lon
-            st.rerun()
+            should_rerun = True
+    
+    if should_rerun:
+        st.rerun()
 
 # --- 6. SIDEBAR ---
 st.sidebar.header(l["side_agron"])
 lat_in = st.sidebar.number_input("Lat", value=st.session_state.lat, format="%.4f")
 lon_in = st.sidebar.number_input("Lon", value=st.session_state.lon, format="%.4f")
 
-# Sincronización manual forzada
 if lat_in != st.session_state.lat or lon_in != st.session_state.lon:
     st.session_state.lat = lat_in
     st.session_state.lon = lon_in
     st.session_state.map_center = [lat_in, lon_in]
     st.rerun()
 
-# FECHA AUTOMÁTICA (1 Año atrás)
+# FECHA AUTOMÁTICA (1 Año hacia atrás por defecto)
 hoy = datetime.now().date()
 un_anio_atras = hoy - timedelta(days=365)
 rango = st.sidebar.date_input(l["period"], value=(un_anio_atras, hoy))
@@ -122,7 +126,8 @@ slope = st.sidebar.slider(l["slope_label"], 3000, 7500, especies[esp_n]["s"])
 intercept = st.sidebar.slider(l["intercept_label"], 500, 2000, especies[esp_n]["i"])
 cons_v = st.sidebar.slider(l["cons_vaca"], 10, 25, especies[esp_n]["c"])
 dias_rot = st.sidebar.slider(l["rotacion"], 1, 100, especies[esp_n]["r"])
-radio = st.sidebar.slider("Radius (m)", 10, 500, 100)
+# Slider de "Contexto" o Radio de Análisis
+radio = st.sidebar.slider("Analysis Radius / Radio (m)", 10, 500, 100)
 
 btn_run = st.sidebar.button(l["btn_run"], type="primary", use_container_width=True)
 
@@ -146,11 +151,23 @@ def get_agronomic_data(lat, lon, start, end, rad):
     df = pd.DataFrame([f['properties'] for f in res['features']]).dropna()
     return df, col, p, is_urban
 
-# --- 8. DASHBOARD ---
-if btn_run:
+# --- 8. DASHBOARD (AUTO-EJECUCIÓN INTELIGENTE) ---
+
+# Detectar si debemos correr el análisis:
+# 1. Si se apretó el botón
+# 2. O si las coordenadas cambiaron respecto a la última vez que calculamos
+coordenadas_cambiaron = (st.session_state.lat != st.session_state.last_calc_lat) or \
+                        (st.session_state.lon != st.session_state.last_calc_lon)
+
+if btn_run or coordenadas_cambiaron:
     st.session_state.url_cache = {} 
-    with st.spinner("🛰️ Synchronizing..."):
+    with st.spinner("🛰️ Scanning paddock..."):
+        # Ejecutamos análisis
         st.session_state.analysis_results = get_agronomic_data(st.session_state.lat, st.session_state.lon, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'), radio)
+        
+        # Actualizamos registros de "última vez calculado"
+        st.session_state.last_calc_lat = st.session_state.lat
+        st.session_state.last_calc_lon = st.session_state.lon
 
 if st.session_state.analysis_results is not None:
     df_raw, col_global, p_ee, urban_flag = st.session_state.analysis_results
