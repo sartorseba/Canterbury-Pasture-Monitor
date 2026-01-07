@@ -18,24 +18,20 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MEMORIA DE SESIÓN (Persistencia total) ---
-if 'lat' not in st.session_state:
-    st.session_state.lat = -43.5320 # Coordenada del PIN
-if 'lon' not in st.session_state:
-    st.session_state.lon = 172.6306
-if 'zoom' not in st.session_state:
-    st.session_state.zoom = 12
-if 'analysis_results' not in st.session_state:
-    st.session_state.analysis_results = None
-if 'url_cache' not in st.session_state: 
-    st.session_state.url_cache = {}
+# --- 2. MEMORIA DE SESIÓN (Persistencia de Estado) ---
+# Coordenadas del PIN (Lote seleccionado)
+if 'lat' not in st.session_state: st.session_state.lat = -43.5320
+if 'lon' not in st.session_state: st.session_state.lon = 172.6306
 
-# NUEVO: Separamos el centro visual del mapa de la coordenada del pin
-# Esto evita que el mapa "salte" al hacer clic
-if 'map_center' not in st.session_state:
-    st.session_state.map_center = [-43.5320, 172.6306]
+# Coordenadas de la VISTA (Dónde está mirando el usuario)
+if 'map_center' not in st.session_state: st.session_state.map_center = [-43.5320, 172.6306]
+if 'zoom' not in st.session_state: st.session_state.zoom = 12
 
-# --- 3. INFRAESTRUCTURA DE CONEXIÓN PERSISTENTE ---
+# Persistencia de Datos y Caché Visual
+if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
+if 'url_cache' not in st.session_state: st.session_state.url_cache = {}
+
+# --- 3. INFRAESTRUCTURA DE CONEXIÓN ---
 @st.cache_resource
 def iniciar_conexion_gee():
     try:
@@ -50,8 +46,11 @@ def iniciar_conexion_gee():
         return str(e)
 
 gee_status = iniciar_conexion_gee()
+if gee_status is not True:
+    st.error(f"❌ Connection Failed: {gee_status}")
+    st.stop()
 
-# --- 4. DICCIONARIO BILINGÜE COMPLETO ---
+# --- 4. DICCIONARIO BILINGÜE ---
 tr = {
     "en": {"title": "🇳🇿 Satellite Biomass Monitor - Canterbury", "map_sub": "🗺️ Click on the map to select your paddock", "side_agron": "🌱 Pasture Configuration", "period": "Analysis Period", "specie": "Forage Species", "slope_label": "Slope (m)", "intercept_label": "Intercept (b)", "cons_vaca": "Intake (kg DM/cow/day)", "rotacion": "Rotation Days (Rest)", "audit": "📅 Capture Audit", "switch_label": "View NDVI Layer (On) / Visible RGB (Off)", "city_warn": "⚠️ Urban area detected. Production set to 0 for accuracy.", "sem_title": "🚦 Sustainable Stocking Rate", "sem_formula": "Carrying Capacity Formula:", "metric_bio_last": "Last Detected Biomass", "metric_bio_sel": "Biomass on Selected Date", "metric_tasa": "Growth Rate", "metric_avg": "Period Average", "btn_run": "🚀 Run Analysis", "download": "📥 Download CSV Report"},
     "es": {"title": "🇳🇿 Monitor de Biomasa Satelital - Canterbury", "map_sub": "🗺️ Haz clic en el mapa para seleccionar tu lote", "side_agron": "🌱 Configuración de Pastura", "period": "Período de Análisis", "specie": "Especie Forrajera", "slope_label": "Pendiente (m)", "intercept_label": "Intercepto (b)", "cons_vaca": "Consumo (kg MS/vaca/día)", "rotacion": "Días de Rotación (Descanso)", "audit": "📅 Auditoría de Captura", "switch_label": "Ver Capa NDVI (Encendido) / Satélite Real (Apagado)", "city_warn": "⚠️ Zona urbana detectada. Producción seteada en cero por precisión.", "sem_title": "🚦 Carga Animal Sustentable", "sem_formula": "Fórmula de Carga Soportable:", "metric_bio_last": "Última Biomasa Detectada", "metric_bio_sel": "Biomasa en Fecha Seleccionada", "metric_tasa": "Tasa de Crecimiento", "metric_avg": "Promedio del Período", "btn_run": "🚀 Ejecutar Análisis", "download": "📥 Descargar Reporte CSV"}
@@ -61,18 +60,14 @@ idioma_opt = st.sidebar.selectbox("🌐 Language / Idioma", ["English", "Españo
 l = tr["en"] if idioma_opt == "English" else tr["es"]
 st.title(l["title"])
 
-if gee_status is not True:
-    st.error(f"❌ Connection Failed: {gee_status}")
-    st.stop()
-
-# --- 5. MAPA INTERACTIVO (MOVIMIENTO NATURAL) ---
+# --- 5. MAPA INTERACTIVO (Lógica Natural Pro) ---
 st.subheader(l["map_sub"])
 
-# FIX NATURAL: El mapa se inicia en el 'map_center' (donde estás mirando), NO en el pin
+# El mapa se dibuja donde el usuario estaba mirando (map_center), NO donde está el pin
 m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
 
-# El PIN se dibuja en su coordenada específica (lat/lon)
+# El Pin se dibuja donde está la latitud seleccionada
 folium.Marker(
     [st.session_state.lat, st.session_state.lon], 
     popup="Selected Paddock", 
@@ -81,36 +76,40 @@ folium.Marker(
 
 map_data = st_folium(m, height=350, width="stretch", key="mapa_canterbury")
 
-# LÓGICA DE ACTUALIZACIÓN NATURAL
+# --- LÓGICA DE ACTUALIZACIÓN FLUIDA ---
 if map_data:
-    # 1. Capturamos dónde está mirando el usuario (Centro) para no moverle el mapa
+    should_rerun = False
+    
+    # 1. Actualizamos dónde está mirando el usuario (sin recargar)
     if 'center' in map_data:
         st.session_state.map_center = [map_data['center']['lat'], map_data['center']['lng']]
-    
-    # 2. Capturamos el Zoom
     if 'zoom' in map_data:
         st.session_state.zoom = map_data['zoom']
 
-    # 3. Solo si hubo clic, movemos el pin (pero el mapa se queda quieto gracias al paso 1)
+    # 2. Detectamos clic para mover el PIN
     if map_data.get('last_clicked'):
-        new_lat = map_data['last_clicked']['lat']
-        new_lon = map_data['last_clicked']['lng']
+        clicked_lat = map_data['last_clicked']['lat']
+        clicked_lon = map_data['last_clicked']['lng']
         
-        # Si la coordenada es diferente a la actual, actualizamos y recargamos
-        if new_lat != st.session_state.lat or new_lon != st.session_state.lon:
-            st.session_state.lat = new_lat
-            st.session_state.lon = new_lon
-            st.rerun()
+        # Solo actualizamos si el clic es en un lugar nuevo (evita loops)
+        if clicked_lat != st.session_state.lat or clicked_lon != st.session_state.lon:
+            st.session_state.lat = clicked_lat
+            st.session_state.lon = clicked_lon
+            should_rerun = True
+    
+    if should_rerun:
+        st.rerun()
 
 # --- 6. SIDEBAR ---
 st.sidebar.header(l["side_agron"])
 lat_in = st.sidebar.number_input("Lat", value=st.session_state.lat, format="%.4f")
 lon_in = st.sidebar.number_input("Lon", value=st.session_state.lon, format="%.4f")
-# Si escriben manual, actualizamos también el centro para ir a ver ese punto
+
+# Sincronización manual (si escribe coordenadas, forzamos centrado)
 if lat_in != st.session_state.lat or lon_in != st.session_state.lon:
     st.session_state.lat = lat_in
     st.session_state.lon = lon_in
-    st.session_state.map_center = [lat_in, lon_in] # Aquí sí forzamos centrar si es manual
+    st.session_state.map_center = [lat_in, lon_in] # Aquí sí movemos la vista
     st.rerun()
 
 rango = st.sidebar.date_input(l["period"], value=(datetime(2025,9,1), datetime(2026,1,7)))
@@ -144,7 +143,7 @@ def get_agronomic_data(lat, lon, start, end, rad):
     df = pd.DataFrame([f['properties'] for f in res['features']]).dropna()
     return df, col, p, is_urban
 
-# --- 8. DASHBOARD ---
+# --- 8. RESULTADOS ESTABLES ---
 if btn_run:
     st.session_state.url_cache = {} 
     with st.spinner("🛰️ Synchronizing..."):
@@ -189,6 +188,7 @@ if st.session_state.analysis_results is not None:
 
         c_img, c_met = st.columns([1.6, 1])
         with c_img:
+            # CACHÉ ANTI-PARPADEO
             cache_key = f"{fecha_sel}_{modo_ndvi}"
             if cache_key in st.session_state.url_cache:
                 url_t = st.session_state.url_cache[cache_key]
