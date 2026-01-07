@@ -7,7 +7,7 @@ import folium
 import json
 from datetime import datetime, timedelta
 
-# --- 1. CONFIGURACIÓN Y ESTILO (Estándar 2026) ---
+# --- 1. CONFIGURACIÓN Y ESTILO ---
 st.set_page_config(page_title="NZ Pasture Monitor", layout="wide")
 
 st.markdown("""
@@ -18,7 +18,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. INFRAESTRUCTURA DE CONEXIÓN PERSISTENTE ---
+# --- 2. MEMORIA DE SESIÓN (Persistencia de coordenadas) ---
+if 'lat' not in st.session_state:
+    st.session_state.lat = -43.5320
+if 'lon' not in st.session_state:
+    st.session_state.lon = 172.6306
+
+# --- 3. INFRAESTRUCTURA DE CONEXIÓN PERSISTENTE ---
 @st.cache_resource
 def iniciar_conexion_gee():
     try:
@@ -32,16 +38,13 @@ def iniciar_conexion_gee():
     except Exception as e:
         return str(e)
 
-status_gee = iniciar_conexion_gee()
-if status_gee is not True:
-    st.error(f"❌ Connection Failed: {status_gee}")
-    st.stop()
+gee_status = iniciar_conexion_gee()
 
-# --- 3. DICCIONARIO BILINGÜE COMPLETO ---
+# --- 4. DICCIONARIO BILINGÜE COMPLETO ---
 tr = {
     "en": {
         "title": "🇳🇿 Satellite Biomass Monitor - Canterbury",
-        "map_sub": "🗺️ Paddock Selection (Google Hybrid View)",
+        "map_sub": "🗺️ Click on the map to select your paddock",
         "side_agron": "🌱 Pasture Configuration",
         "period": "Analysis Period",
         "specie": "Forage Species",
@@ -63,7 +66,7 @@ tr = {
     },
     "es": {
         "title": "🇳🇿 Monitor de Biomasa Satelital - Canterbury",
-        "map_sub": "🗺️ Selección de Lote (Vista Híbrida)",
+        "map_sub": "🗺️ Haz clic en el mapa para seleccionar tu lote",
         "side_agron": "🌱 Configuración de Pastura",
         "period": "Período de Análisis",
         "specie": "Especie Forrajera",
@@ -89,38 +92,52 @@ idioma_opt = st.sidebar.selectbox("🌐 Language / Idioma", ["English", "Españo
 l = tr["en"] if idioma_opt == "English" else tr["es"]
 st.title(l["title"])
 
-# --- 4. MAPA INTERACTIVO ---
+if gee_status is not True:
+    st.error(f"❌ Connection Failed: {gee_status}")
+    st.stop()
+
+# --- 5. MAPA INTERACTIVO ---
 st.subheader(l["map_sub"])
-m = folium.Map(location=[-43.5320, 172.6306], zoom_start=12)
+m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=12)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid').add_to(m)
 map_data = st_folium(m, height=350, width="stretch")
 
-lat_act = map_data['last_clicked']['lat'] if map_data and map_data['last_clicked'] else -43.5320
-lon_act = map_data['last_clicked']['lng'] if map_data and map_data['last_clicked'] else 172.6306
+# Actualizar sesión si hay clic
+if map_data and map_data['last_clicked']:
+    st.session_state.lat = map_data['last_clicked']['lat']
+    st.session_state.lon = map_data['last_clicked']['lng']
 
-# --- 5. SIDEBAR (ENTRADAS AGRONÓMICAS) ---
+# --- 6. SIDEBAR (ENTRADAS AGRONÓMICAS) ---
 st.sidebar.header(l["side_agron"])
+lat_in = st.sidebar.number_input("Lat", value=st.session_state.lat, format="%.4f")
+lon_in = st.sidebar.number_input("Lon", value=st.session_state.lon, format="%.4f")
+st.session_state.lat, st.session_state.lon = lat_in, lon_in
+
 rango = st.sidebar.date_input(l["period"], value=(datetime(2025,9,1), datetime(2026,1,7)))
-especies = {"Raigrás Perenne (NZ)": {"s": 5800, "i": 1200, "c": 18, "r": 21}, "Alfalfa (Lucerne)": {"s": 6157, "i": 1346, "c": 16, "r": 35}}
+especies = {
+    "Raigrás Perenne (NZ)": {"s": 5800, "i": 1200, "c": 18, "r": 21},
+    "Alfalfa (Lucerne)": {"s": 6157, "i": 1346, "c": 16, "r": 35}
+}
 esp_n = st.sidebar.selectbox(l["specie"], list(especies.keys()))
 slope = st.sidebar.slider(l["slope_label"], 3000, 7500, especies[esp_n]["s"])
 intercept = st.sidebar.slider(l["intercept_label"], 500, 2000, especies[esp_n]["i"])
 cons_v = st.sidebar.slider(l["cons_vaca"], 10, 25, especies[esp_n]["c"])
 dias_rot = st.sidebar.slider(l["rotacion"], 1, 100, especies[esp_n]["r"])
-# BOTÓN DE INFRAESTRUCTURA PARA VELOCIDAD
+radio = st.sidebar.slider("Radius (m)", 10, 500, 100)
+
 btn_run = st.sidebar.button(l["btn_run"], type="primary", use_container_width=True)
 
-# --- 6. PROCESAMIENTO OPTIMIZADO (Filtro Ciudad + Satélite) ---
+# --- 7. PROCESAMIENTO OPTIMIZADO ---
 @st.cache_data(show_spinner=False)
-def get_agronomic_data(lat, lon, start, end):
+def get_agronomic_data(lat, lon, start, end, rad):
     p = ee.Geometry.Point([lon, lat])
-    roi = p.buffer(100)
+    roi = p.buffer(rad)
     
     # Filtro Urbano (ESA WorldCover)
     lc = ee.Image("ESA/WorldCover/v200/2021").clip(roi)
     is_urban = ee.Number(lc.eq(50).reduceRegion(ee.Reducer.mean(), roi, 20).get('Map')).gt(0.35).getInfo()
 
-    # Sentinel-2 con filtro estricto de nubes
+    # Colección Sentinel-2
     col = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(roi)
            .filterDate(start, end).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
            .map(lambda img: img.addBands(img.normalizedDifference(['B8', 'B4']).rename('NDVI'))))
@@ -133,10 +150,10 @@ def get_agronomic_data(lat, lon, start, end):
     df = pd.DataFrame([f['properties'] for f in res['features']]).dropna()
     return df, col, p, is_urban
 
-# --- 7. DASHBOARD DE RESULTADOS ---
+# --- 8. DASHBOARD DE RESULTADOS ---
 if btn_run:
     with st.spinner("🛰️ Synchronizing with Sentinel-2..."):
-        df_raw, col_global, p_ee, urban_flag = get_agronomic_data(lat_act, lon_act, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'))
+        df_raw, col_global, p_ee, urban_flag = get_agronomic_data(st.session_state.lat, st.session_state.lon, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'), radio)
         
         if urban_flag: st.warning(l["city_warn"])
         
@@ -153,16 +170,22 @@ if btn_run:
             df['tendencia'] = df['clean'].interpolate().rolling(window=7, center=True, min_periods=1).mean()
             df['tasa'] = df['tendencia'].diff() / df['fecha'].diff().dt.days
 
-            # Visualización Gráfica
-            fig, ax = plt.subplots(figsize=(12, 4))
-            ax.plot(df['fecha'], df['kg_dm_ha'], 'o', alpha=0.1, color='gray')
-            ax.plot(df['fecha'], df['tendencia'], '-', linewidth=4, color='forestgreen')
-            ax.fill_between(df['fecha'], df['tendencia'], color='forestgreen', alpha=0.1)
-            st.pyplot(fig)
+            # 1. Gráfico Principal
+            avg_p = df['tendencia'].mean()
+            col_g1, col_g2 = st.columns([3, 1])
+            with col_g1:
+                fig, ax = plt.subplots(figsize=(12, 4))
+                ax.plot(df['fecha'], df['kg_dm_ha'], 'o', alpha=0.1, color='gray')
+                ax.plot(df['fecha'], df['tendencia'], '-', linewidth=4, color='forestgreen')
+                ax.fill_between(df['fecha'], df['tendencia'], color='forestgreen', alpha=0.1)
+                st.pyplot(fig)
+            with col_g2:
+                st.metric(l["metric_avg"], f"{int(avg_p)} kg MS/ha")
+                st.metric(l["metric_bio_last"], f"{int(df['tendencia'].iloc[-1])} kg")
 
             st.divider()
             
-            # Auditoría Satelital e Imagen (width="stretch" estándar 2026)
+            # 2. Auditoría e Imagen
             c_sel, c_tog = st.columns([3, 1])
             with c_sel: fecha_sel = st.select_slider(l["audit"], options=df['fecha'].dt.strftime('%Y-%m-%d').tolist())
             with c_tog: modo_ndvi = st.toggle(l["switch_label"], value=False)
@@ -172,9 +195,10 @@ if btn_run:
             c_img, c_met = st.columns([1.6, 1])
             with c_img:
                 img_ee = col_global.filterDate(fecha_sel, (pd.to_datetime(fecha_sel) + timedelta(days=1)).strftime('%Y-%m-%d')).first()
-                viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green']) if modo_ndvi else img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
-                url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(100)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(800).bounds(), 'format': 'png'})
-                st.image(url_t, width="stretch")
+                if img_ee:
+                    viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green']) if modo_ndvi else img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
+                    url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
+                    st.image(url_t, width="stretch")
 
             with c_met:
                 st.subheader(l["sem_title"])
@@ -186,7 +210,9 @@ if btn_run:
                 elif carga > 1.5: st.warning(f"EQUILIBRIUM ({carga:.1f} cows/ha)")
                 else: st.error(f"DEFICIT ({carga:.1f} cows/ha)")
 
-                with st.expander(f"📌 {l['sem_formula']}"): st.latex(r"Stocking = \frac{Growth + \frac{Biomass - 1500}{Rotation}}{Intake}")
+                with st.expander(f"📌 {l['sem_formula']}"): 
+                    st.latex(r"Stocking = \frac{Growth + \frac{Biomass - 1500}{Rotation}}{Intake}")
+                
                 st.metric(l["metric_bio_sel"], f"{int(bio_c)} kg MS/ha")
                 st.metric(l["metric_tasa"], f"{tasa_c:.1f} kg/day")
 
