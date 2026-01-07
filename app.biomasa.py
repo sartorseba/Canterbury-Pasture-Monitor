@@ -7,6 +7,7 @@ import folium
 from folium.plugins import MiniMap
 import json
 from datetime import datetime, timedelta
+import os
 
 # --- 1. CONFIGURACIÓN Y ESTILO ---
 st.set_page_config(page_title="NZ Pasture Monitor", layout="wide")
@@ -28,22 +29,29 @@ if 'zoom' not in st.session_state: st.session_state.zoom = 12
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
 if 'url_cache' not in st.session_state: st.session_state.url_cache = {}
 
-# Variables para detectar cambios y auto-ejecutar
+# Variables para detectar cambios (Lat, Lon Y RADIO)
 if 'last_calc_lat' not in st.session_state: st.session_state.last_calc_lat = 0
 if 'last_calc_lon' not in st.session_state: st.session_state.last_calc_lon = 0
 if 'last_calc_radio' not in st.session_state: st.session_state.last_calc_radio = 0
 
-# --- 3. CONEXIÓN ---
+# --- 3. CONEXIÓN ROBUSTA ---
 @st.cache_resource
 def iniciar_conexion_gee():
     try:
-        if "GEE_JSON" in st.secrets:
+        # Opción 1: Archivo local (Mac)
+        if os.path.exists("llave.json"):
+            credentials = ee.ServiceAccountCredentials(None, key_file="llave.json")
+            ee.Initialize(credentials, project='nz-biomass')
+            return True
+        # Opción 2: Nube (Secrets)
+        elif "GEE_JSON" in st.secrets:
             info = json.loads(st.secrets["GEE_JSON"])
             credentials = ee.ServiceAccountCredentials(info['client_email'], key_data=st.secrets["GEE_JSON"])
             ee.Initialize(credentials, project=info['project_id'])
+            return True
         else:
             ee.Initialize(project='nz-biomass')
-        return True
+            return True
     except Exception as e:
         return str(e)
 
@@ -112,9 +120,10 @@ intercept = st.sidebar.slider(l["intercept_label"], 500, 2000, especies[esp_n]["
 cons_v = st.sidebar.slider(l["cons_vaca"], 10, 25, especies[esp_n]["c"])
 dias_rot = st.sidebar.slider(l["rotacion"], 1, 100, especies[esp_n]["r"])
 
-# SLIDERS DE CONTROL DE IMAGEN
+# --- CONTROLES DE IMAGEN (SIDEBAR) ---
+st.sidebar.divider()
+st.sidebar.subheader("🖼️ Image Controls")
 radio = st.sidebar.slider("Analysis Radius / Radio (m)", 10, 500, 100)
-# Slider Movido al Sidebar por pedido
 zoom_contexto = st.sidebar.slider("🔍 Image Context Zoom (x)", 1.0, 10.0, 3.0, 0.5)
 
 btn_run = st.sidebar.button(l["btn_run"], type="primary", use_container_width=True)
@@ -138,14 +147,17 @@ def get_agronomic_data(lat, lon, start, end, rad):
 # --- 8. DASHBOARD INTELIGENTE ---
 
 # CONDICIÓN DE AUTO-EJECUCIÓN: Lat, Lon O RADIO cambiaron
+# Esto asegura que si movés el radio, se recalcule todo automáticamente
 params_changed = (st.session_state.lat != st.session_state.last_calc_lat) or \
                  (st.session_state.lon != st.session_state.last_calc_lon) or \
                  (radio != st.session_state.last_calc_radio)
 
 if btn_run or params_changed:
-    st.session_state.url_cache = {} 
+    st.session_state.url_cache = {} # Limpiamos caché para que la imagen se regenere con el nuevo radio
     with st.spinner("🛰️ Scanning paddock..."):
         st.session_state.analysis_results = get_agronomic_data(st.session_state.lat, st.session_state.lon, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'), radio)
+        
+        # Actualizamos referencias
         st.session_state.last_calc_lat = st.session_state.lat
         st.session_state.last_calc_lon = st.session_state.lon
         st.session_state.last_calc_radio = radio
@@ -189,7 +201,7 @@ if st.session_state.analysis_results is not None:
 
         c_img, c_met = st.columns([1.6, 1])
         with c_img:
-            # CACHÉ que incluye el ZOOM del sidebar
+            # Clave de caché que incluye Radio y Zoom para actualizarse instantáneamente
             cache_key = f"{fecha_sel}_{modo_ndvi}_{radio}_{zoom_contexto}"
             
             if cache_key in st.session_state.url_cache:
@@ -200,7 +212,7 @@ if st.session_state.analysis_results is not None:
                 if img_ee:
                     viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green']) if modo_ndvi else img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
                     
-                    # Generamos imagen con el zoom de contexto seleccionado en el sidebar
+                    # Generación de imagen con el zoom de contexto aplicado (radio * zoom_contexto)
                     url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * zoom_contexto).bounds(), 'format': 'png'})
                     
                     st.session_state.url_cache[cache_key] = url_t
