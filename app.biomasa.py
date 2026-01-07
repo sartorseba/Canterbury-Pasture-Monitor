@@ -4,11 +4,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from streamlit_folium import st_folium
 import folium
-from folium.plugins import MiniMap # Plugin profesional de contexto
+from folium.plugins import MiniMap
 import json
 from datetime import datetime, timedelta
 
-# --- 1. CONFIGURACIÓN Y ESTILO (Estándar 2026) ---
+# --- 1. CONFIGURACIÓN Y ESTILO ---
 st.set_page_config(page_title="NZ Pasture Monitor", layout="wide")
 
 st.markdown("""
@@ -20,19 +20,18 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 2. MEMORIA DE SESIÓN ---
-# Coordenadas y Estado del Mapa
 if 'lat' not in st.session_state: st.session_state.lat = -43.5320
 if 'lon' not in st.session_state: st.session_state.lon = 172.6306
 if 'map_center' not in st.session_state: st.session_state.map_center = [-43.5320, 172.6306]
 if 'zoom' not in st.session_state: st.session_state.zoom = 12
 
-# Datos y Caché
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
 if 'url_cache' not in st.session_state: st.session_state.url_cache = {}
 
-# Variables para detectar cambios y auto-ejecutar
+# Variables para detectar cambios (Lat, Lon Y AHORA RADIO)
 if 'last_calc_lat' not in st.session_state: st.session_state.last_calc_lat = 0
 if 'last_calc_lon' not in st.session_state: st.session_state.last_calc_lon = 0
+if 'last_calc_radio' not in st.session_state: st.session_state.last_calc_radio = 0
 
 # --- 3. CONEXIÓN ---
 @st.cache_resource
@@ -63,13 +62,11 @@ idioma_opt = st.sidebar.selectbox("🌐 Language / Idioma", ["English", "Españo
 l = tr["en"] if idioma_opt == "English" else tr["es"]
 st.title(l["title"])
 
-# --- 5. MAPA INTERACTIVO (Natural + Contexto) ---
+# --- 5. MAPA INTERACTIVO ---
 st.subheader(l["map_sub"])
 
 m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
-
-# Plugin de MiniMap (Zoom de Contexto)
 MiniMap(tile_layer='OpenStreetMap', toggle_display=True, position='bottomright').add_to(m)
 
 folium.Marker(
@@ -78,21 +75,12 @@ folium.Marker(
     icon=folium.Icon(color="red", icon="info-sign")
 ).add_to(m)
 
-map_data = st_folium(
-    m, 
-    height=350, 
-    width="stretch", 
-    key="mapa_canterbury", 
-    returned_objects=["last_clicked", "center", "zoom"]
-)
+map_data = st_folium(m, height=350, width="stretch", key="mapa_canterbury", returned_objects=["last_clicked", "center", "zoom"])
 
-# Lógica de Actualización de Vista y Pin
 if map_data:
     should_rerun = False
-    
     if map_data.get('center'): st.session_state.map_center = [map_data['center']['lat'], map_data['center']['lng']]
     if map_data.get('zoom'): st.session_state.zoom = map_data['zoom']
-
     if map_data.get('last_clicked'):
         new_lat = map_data['last_clicked']['lat']
         new_lon = map_data['last_clicked']['lng']
@@ -100,9 +88,7 @@ if map_data:
             st.session_state.lat = new_lat
             st.session_state.lon = new_lon
             should_rerun = True
-    
-    if should_rerun:
-        st.rerun()
+    if should_rerun: st.rerun()
 
 # --- 6. SIDEBAR ---
 st.sidebar.header(l["side_agron"])
@@ -115,7 +101,6 @@ if lat_in != st.session_state.lat or lon_in != st.session_state.lon:
     st.session_state.map_center = [lat_in, lon_in]
     st.rerun()
 
-# FECHA AUTOMÁTICA (1 Año hacia atrás por defecto)
 hoy = datetime.now().date()
 un_anio_atras = hoy - timedelta(days=365)
 rango = st.sidebar.date_input(l["period"], value=(un_anio_atras, hoy))
@@ -126,7 +111,6 @@ slope = st.sidebar.slider(l["slope_label"], 3000, 7500, especies[esp_n]["s"])
 intercept = st.sidebar.slider(l["intercept_label"], 500, 2000, especies[esp_n]["i"])
 cons_v = st.sidebar.slider(l["cons_vaca"], 10, 25, especies[esp_n]["c"])
 dias_rot = st.sidebar.slider(l["rotacion"], 1, 100, especies[esp_n]["r"])
-# Slider de "Contexto" o Radio de Análisis
 radio = st.sidebar.slider("Analysis Radius / Radio (m)", 10, 500, 100)
 
 btn_run = st.sidebar.button(l["btn_run"], type="primary", use_container_width=True)
@@ -143,31 +127,25 @@ def get_agronomic_data(lat, lon, start, end, rad):
            .filterDate(start, end).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
            .map(lambda img: img.addBands(img.normalizedDifference(['B8', 'B4']).rename('NDVI'))))
     
-    res = col.map(lambda img: ee.Feature(None, {
-        'fecha': img.date().format('YYYY-MM-dd'), 
-        'ndvi': img.reduceRegion(ee.Reducer.mean(), roi, 20).get('NDVI')
-    })).getInfo()
-    
+    res = col.map(lambda img: ee.Feature(None, {'fecha': img.date().format('YYYY-MM-dd'), 'ndvi': img.reduceRegion(ee.Reducer.mean(), roi, 20).get('NDVI')})).getInfo()
     df = pd.DataFrame([f['properties'] for f in res['features']]).dropna()
     return df, col, p, is_urban
 
-# --- 8. DASHBOARD (AUTO-EJECUCIÓN INTELIGENTE) ---
+# --- 8. DASHBOARD INTELIGENTE ---
 
-# Detectar si debemos correr el análisis:
-# 1. Si se apretó el botón
-# 2. O si las coordenadas cambiaron respecto a la última vez que calculamos
-coordenadas_cambiaron = (st.session_state.lat != st.session_state.last_calc_lat) or \
-                        (st.session_state.lon != st.session_state.last_calc_lon)
+# CONDICIÓN DE AUTO-EJECUCIÓN: Lat, Lon O RADIO cambiaron
+params_changed = (st.session_state.lat != st.session_state.last_calc_lat) or \
+                 (st.session_state.lon != st.session_state.last_calc_lon) or \
+                 (radio != st.session_state.last_calc_radio)
 
-if btn_run or coordenadas_cambiaron:
+if btn_run or params_changed:
     st.session_state.url_cache = {} 
     with st.spinner("🛰️ Scanning paddock..."):
-        # Ejecutamos análisis
         st.session_state.analysis_results = get_agronomic_data(st.session_state.lat, st.session_state.lon, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'), radio)
-        
-        # Actualizamos registros de "última vez calculado"
+        # Actualizamos todos los estados de referencia
         st.session_state.last_calc_lat = st.session_state.lat
         st.session_state.last_calc_lon = st.session_state.lon
+        st.session_state.last_calc_radio = radio
 
 if st.session_state.analysis_results is not None:
     df_raw, col_global, p_ee, urban_flag = st.session_state.analysis_results
@@ -208,7 +186,12 @@ if st.session_state.analysis_results is not None:
 
         c_img, c_met = st.columns([1.6, 1])
         with c_img:
-            cache_key = f"{fecha_sel}_{modo_ndvi}"
+            # SLIDER DE ZOOM DE CONTEXTO (VISUAL)
+            zoom_contexto = st.slider("🔍 Image Zoom (Context)", 1.0, 10.0, 5.0, 0.5)
+            
+            # CACHÉ QUE INCLUYE EL ZOOM Y EL RADIO
+            cache_key = f"{fecha_sel}_{modo_ndvi}_{radio}_{zoom_contexto}"
+            
             if cache_key in st.session_state.url_cache:
                 url_t = st.session_state.url_cache[cache_key]
                 st.image(url_t, width="stretch")
@@ -216,7 +199,10 @@ if st.session_state.analysis_results is not None:
                 img_ee = col_global.filterDate(fecha_sel, (pd.to_datetime(fecha_sel) + timedelta(days=1)).strftime('%Y-%m-%d')).first()
                 if img_ee:
                     viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green']) if modo_ndvi else img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
-                    url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
+                    
+                    # AQUÍ APLICAMOS EL ZOOM DE CONTEXTO (radio * zoom_contexto)
+                    url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * zoom_contexto).bounds(), 'format': 'png'})
+                    
                     st.session_state.url_cache[cache_key] = url_t
                     st.image(url_t, width="stretch")
 
