@@ -18,14 +18,16 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MEMORIA DE SESIÓN (Persistencia de coordenadas y zoom) ---
+# --- 2. MEMORIA DE SESIÓN (Coordenadas, Zoom y RESULTADOS) ---
 if 'lat' not in st.session_state:
     st.session_state.lat = -43.5320
 if 'lon' not in st.session_state:
     st.session_state.lon = 172.6306
-# Clave para tu pedido: guardamos el zoom actual
 if 'zoom' not in st.session_state:
     st.session_state.zoom = 12
+# Nuevo: Guardamos los resultados para que no desaparezcan al cliquear
+if 'resultados' not in st.session_state:
+    st.session_state.resultados = None
 
 # --- 3. INFRAESTRUCTURA DE CONEXIÓN PERSISTENTE ---
 @st.cache_resource
@@ -99,9 +101,8 @@ if gee_status is not True:
     st.error(f"❌ Connection Failed: {gee_status}")
     st.stop()
 
-# --- 5. MAPA INTERACTIVO (Con Zoom Persistente) ---
+# --- 5. MAPA INTERACTIVO (Con Pin y Zoom Persistentes) ---
 st.subheader(l["map_sub"])
-# Iniciamos el mapa con el zoom guardado en session_state
 m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=st.session_state.zoom)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
 
@@ -111,21 +112,19 @@ folium.Marker(
     icon=folium.Icon(color="red", icon="info-sign")
 ).add_to(m)
 
-# El mapa ahora usa una clave única para mantener su estado
 map_data = st_folium(m, height=350, width="stretch", key="mapa_canterbury")
 
-# Capturamos el zoom que el usuario está usando actualmente
+# Captura de Zoom
 if map_data and 'zoom' in map_data:
     st.session_state.zoom = map_data['zoom']
 
-# Actualizar sesión si hay clic, manteniendo el zoom actual
+# Lógica de Clic: Actualiza coordenadas y recarga SIN borrar resultados visuales
 if map_data and map_data['last_clicked']:
     new_lat = map_data['last_clicked']['lat']
     new_lon = map_data['last_clicked']['lng']
     if new_lat != st.session_state.lat or new_lon != st.session_state.lon:
         st.session_state.lat = new_lat
         st.session_state.lon = new_lon
-        # Al recargar, usará el st.session_state.zoom actualizado arriba
         st.rerun()
 
 # --- 6. SIDEBAR (ENTRADAS AGRONÓMICAS) ---
@@ -168,70 +167,80 @@ def get_agronomic_data(lat, lon, start, end, rad):
     df = pd.DataFrame([f['properties'] for f in res['features']]).dropna()
     return df, col, p, is_urban
 
-# --- 8. DASHBOARD DE RESULTADOS ---
+# --- 8. LOGICA DE ACTUALIZACIÓN Y VISUALIZACIÓN ---
+
+# Si se aprieta el botón, calculamos y guardamos en sesión
 if btn_run:
     with st.spinner("🛰️ Synchronizing with Sentinel-2..."):
-        df_raw, col_global, p_ee, urban_flag = get_agronomic_data(st.session_state.lat, st.session_state.lon, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'), radio)
+        # Guardamos todo en un diccionario dentro de session_state
+        datos = get_agronomic_data(st.session_state.lat, st.session_state.lon, rango[0].strftime('%Y-%m-%d'), rango[1].strftime('%Y-%m-%d'), radio)
+        st.session_state.resultados = datos
+
+# Si hay resultados guardados (ya sea de ahora o de antes), los mostramos
+if st.session_state.resultados is not None:
+    # Desempaquetamos los datos guardados
+    df_raw, col_global, p_ee, urban_flag = st.session_state.resultados
+    
+    if urban_flag: st.warning(l["city_warn"])
+    
+    if not df_raw.empty:
+        df = df_raw.copy()
+        df['fecha'] = pd.to_datetime(df['fecha'])
+        df = df.sort_values('fecha')
+        mult = 0 if urban_flag else 1
+        df['kg_dm_ha'] = (((df['ndvi'] * slope) - intercept) * mult).clip(lower=0)
         
-        if urban_flag: st.warning(l["city_warn"])
+        # Suavizado de curva
+        df['clean'] = df['kg_dm_ha']
+        df.loc[df['kg_dm_ha'] < (df['kg_dm_ha'].rolling(3).mean() * 0.6), 'clean'] = None
+        df['tendencia'] = df['clean'].interpolate().rolling(window=7, center=True, min_periods=1).mean()
+        df['tasa'] = df['tendencia'].diff() / df['fecha'].diff().dt.days
+
+        # Gráfico Principal
+        avg_p = df['tendencia'].mean()
+        col_g1, col_g2 = st.columns([3, 1])
+        with col_g1:
+            fig, ax = plt.subplots(figsize=(12, 4))
+            ax.plot(df['fecha'], df['kg_dm_ha'], 'o', alpha=0.1, color='gray')
+            ax.plot(df['fecha'], df['tendencia'], '-', linewidth=4, color='forestgreen')
+            ax.fill_between(df['fecha'], df['tendencia'], color='forestgreen', alpha=0.1)
+            st.pyplot(fig)
+        with col_g2:
+            st.metric(l["metric_avg"], f"{int(avg_p)} kg MS/ha")
+            st.metric(l["metric_bio_last"], f"{int(df['tendencia'].iloc[-1])} kg")
+
+        st.divider()
         
-        if not df_raw.empty:
-            df = df_raw.copy()
-            df['fecha'] = pd.to_datetime(df['fecha'])
-            df = df.sort_values('fecha')
-            mult = 0 if urban_flag else 1
-            df['kg_dm_ha'] = (((df['ndvi'] * slope) - intercept) * mult).clip(lower=0)
+        # Auditoría Satelital
+        c_sel, c_tog = st.columns([3, 1])
+        with c_sel: fecha_sel = st.select_slider(l["audit"], options=df['fecha'].dt.strftime('%Y-%m-%d').tolist())
+        with c_tog: modo_ndvi = st.toggle(l["switch_label"], value=False)
             
-            # Suavizado de curva
-            df['clean'] = df['kg_dm_ha']
-            df.loc[df['kg_dm_ha'] < (df['kg_dm_ha'].rolling(3).mean() * 0.6), 'clean'] = None
-            df['tendencia'] = df['clean'].interpolate().rolling(window=7, center=True, min_periods=1).mean()
-            df['tasa'] = df['tendencia'].diff() / df['fecha'].diff().dt.days
+        dato = df[df['fecha'].dt.strftime('%Y-%m-%d') == fecha_sel].iloc[0]
 
-            # Gráfico Principal
-            avg_p = df['tendencia'].mean()
-            col_g1, col_g2 = st.columns([3, 1])
-            with col_g1:
-                fig, ax = plt.subplots(figsize=(12, 4))
-                ax.plot(df['fecha'], df['kg_dm_ha'], 'o', alpha=0.1, color='gray')
-                ax.plot(df['fecha'], df['tendencia'], '-', linewidth=4, color='forestgreen')
-                ax.fill_between(df['fecha'], df['tendencia'], color='forestgreen', alpha=0.1)
-                st.pyplot(fig)
-            with col_g2:
-                st.metric(l["metric_avg"], f"{int(avg_p)} kg MS/ha")
-                st.metric(l["metric_bio_last"], f"{int(df['tendencia'].iloc[-1])} kg")
+        c_img, c_met = st.columns([1.6, 1])
+        with c_img:
+            img_ee = col_global.filterDate(fecha_sel, (pd.to_datetime(fecha_sel) + timedelta(days=1)).strftime('%Y-%m-%d')).first()
+            if img_ee:
+                viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green']) if modo_ndvi else img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
+                # Usamos el buffer guardado en la sesión para la imagen
+                url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
+                st.image(url_t, width="stretch")
 
-            st.divider()
+        with c_met:
+            st.subheader(l["sem_title"])
+            bio_c = dato['tendencia']
+            tasa_c = dato['tasa'] if not pd.isna(dato['tasa']) else 0
+            carga = (tasa_c + ((bio_c - 1500) / dias_rot)) / cons_v if cons_v > 0 else 0
             
-            # Auditoría Satelital
-            c_sel, c_tog = st.columns([3, 1])
-            with c_sel: fecha_sel = st.select_slider(l["audit"], options=df['fecha'].dt.strftime('%Y-%m-%d').tolist())
-            with c_tog: modo_ndvi = st.toggle(l["switch_label"], value=False)
-                
-            dato = df[df['fecha'].dt.strftime('%Y-%m-%d') == fecha_sel].iloc[0]
+            if carga > 3.5: st.success(f"SURPLUS ({carga:.1f} cows/ha)")
+            elif carga > 1.5: st.warning(f"EQUILIBRIUM ({carga:.1f} cows/ha)")
+            else: st.error(f"DEFICIT ({carga:.1f} cows/ha)")
 
-            c_img, c_met = st.columns([1.6, 1])
-            with c_img:
-                img_ee = col_global.filterDate(fecha_sel, (pd.to_datetime(fecha_sel) + timedelta(days=1)).strftime('%Y-%m-%d')).first()
-                if img_ee:
-                    viz = img_ee.normalizedDifference(['B8', 'B4']).visualize(min=0.2, max=0.8, palette=['red', 'yellow', 'green']) if modo_ndvi else img_ee.select(['B4','B3','B2']).visualize(min=0, max=3000, gamma=1.4)
-                    url_t = viz.blend(ee.Image().byte().paint(ee.FeatureCollection(p_ee.buffer(radio)), 1, 2).visualize(palette=['#FF0000'])).getThumbURL({'dimensions': 800, 'region': p_ee.buffer(radio * 8).bounds(), 'format': 'png'})
-                    st.image(url_t, width="stretch")
+            with st.expander(f"📌 {l['sem_formula']}"): 
+                st.latex(r"Stocking = \frac{Growth + \frac{Biomass - 1500}{Rotation}}{Intake}")
+            
+            st.metric(l["metric_bio_sel"], f"{int(bio_c)} kg MS/ha")
+            st.metric(l["metric_tasa"], f"{tasa_c:.1f} kg/day")
 
-            with c_met:
-                st.subheader(l["sem_title"])
-                bio_c = dato['tendencia']
-                tasa_c = dato['tasa'] if not pd.isna(dato['tasa']) else 0
-                carga = (tasa_c + ((bio_c - 1500) / dias_rot)) / cons_v if cons_v > 0 else 0
-                
-                if carga > 3.5: st.success(f"SURPLUS ({carga:.1f} cows/ha)")
-                elif carga > 1.5: st.warning(f"EQUILIBRIUM ({carga:.1f} cows/ha)")
-                else: st.error(f"DEFICIT ({carga:.1f} cows/ha)")
-
-                with st.expander(f"📌 {l['sem_formula']}"): 
-                    st.latex(r"Stocking = \frac{Growth + \frac{Biomass - 1500}{Rotation}}{Intake}")
-                
-                st.metric(l["metric_bio_sel"], f"{int(bio_c)} kg MS/ha")
-                st.metric(l["metric_tasa"], f"{tasa_c:.1f} kg/day")
-
-            st.sidebar.download_button(l["download"], df.to_csv(index=False).encode('utf-8'), "pasture_report.csv", "text/csv")
+        st.sidebar.download_button(l["download"], df.to_csv(index=False).encode('utf-8'), "pasture_report.csv", "text/csv")
