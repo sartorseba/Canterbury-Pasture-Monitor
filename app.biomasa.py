@@ -7,7 +7,7 @@ import folium
 import json
 from datetime import datetime, timedelta
 
-# --- 1. CONFIGURACIÓN Y ESTILO (Estándar 2026) ---
+# --- 1. CONFIGURACIÓN Y ESTILO ---
 st.set_page_config(page_title="NZ Pasture Monitor", layout="wide")
 
 st.markdown("""
@@ -21,6 +21,7 @@ st.markdown("""
 # --- 2. MEMORIA DE SESIÓN ---
 if 'lat' not in st.session_state: st.session_state.lat = -43.5320
 if 'lon' not in st.session_state: st.session_state.lon = 172.6306
+# El centro del mapa inicia donde el usuario mira
 if 'map_center' not in st.session_state: st.session_state.map_center = [-43.5320, 172.6306]
 if 'zoom' not in st.session_state: st.session_state.zoom = 12
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
@@ -55,19 +56,20 @@ idioma_opt = st.sidebar.selectbox("🌐 Language / Idioma", ["English", "Españo
 l = tr["en"] if idioma_opt == "English" else tr["es"]
 st.title(l["title"])
 
-# --- 5. MAPA INTERACTIVO (Optimizado para 1 Clic) ---
+# --- 5. MAPA INTERACTIVO PRO (Optimizado) ---
 st.subheader(l["map_sub"])
 
 m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom)
 folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False).add_to(m)
 
+# El Pin sigue la lógica de datos
 folium.Marker(
     [st.session_state.lat, st.session_state.lon], 
     popup="Selected Paddock", 
     icon=folium.Icon(color="red", icon="info-sign")
 ).add_to(m)
 
-# OPTIMIZACIÓN CLAVE: returned_objects reduce el tráfico de datos y hace el clic instantáneo
+# FIX DINÁMICA NATURAL: "returned_objects" evita la carga pesada al hacer zoom
 map_data = st_folium(
     m, 
     height=350, 
@@ -76,41 +78,44 @@ map_data = st_folium(
     returned_objects=["last_clicked", "center", "zoom"]
 )
 
+# Lógica de Actualización Silenciosa
 if map_data:
-    should_rerun = False
+    changed = False
     
-    # Actualizar vista (sin rerun forzado, fluye natural)
+    # Actualizamos donde mira el usuario (Zoom/Pan)
+    if map_data.get('zoom') and map_data['zoom'] != st.session_state.zoom:
+        st.session_state.zoom = map_data['zoom']
+        # No hacemos rerun aquí, dejamos que fluya natural
+        
     if map_data.get('center'):
         st.session_state.map_center = [map_data['center']['lat'], map_data['center']['lng']]
-    if map_data.get('zoom'):
-        st.session_state.zoom = map_data['zoom']
 
-    # Actualizar Pin (con rerun para mostrarlo YA)
+    # Solo hacemos RERUN si cambia el PIN (Clic explícito)
     if map_data.get('last_clicked'):
         new_lat = map_data['last_clicked']['lat']
         new_lon = map_data['last_clicked']['lng']
-        
-        # Solo actualizamos si cambió la posición
         if new_lat != st.session_state.lat or new_lon != st.session_state.lon:
             st.session_state.lat = new_lat
             st.session_state.lon = new_lon
-            should_rerun = True
-    
-    if should_rerun:
-        st.rerun()
+            st.rerun()
 
 # --- 6. SIDEBAR ---
 st.sidebar.header(l["side_agron"])
 lat_in = st.sidebar.number_input("Lat", value=st.session_state.lat, format="%.4f")
 lon_in = st.sidebar.number_input("Lon", value=st.session_state.lon, format="%.4f")
 
+# Sincronización manual forzada
 if lat_in != st.session_state.lat or lon_in != st.session_state.lon:
     st.session_state.lat = lat_in
     st.session_state.lon = lon_in
     st.session_state.map_center = [lat_in, lon_in]
     st.rerun()
 
-rango = st.sidebar.date_input(l["period"], value=(datetime(2025,9,1), datetime(2026,1,7)))
+# FECHA AUTOMÁTICA (1 Año atrás)
+hoy = datetime.now().date()
+un_anio_atras = hoy - timedelta(days=365)
+rango = st.sidebar.date_input(l["period"], value=(un_anio_atras, hoy))
+
 especies = {"Raigrás Perenne (NZ)": {"s": 5800, "i": 1200, "c": 18, "r": 21}, "Alfalfa (Lucerne)": {"s": 6157, "i": 1346, "c": 16, "r": 35}}
 esp_n = st.sidebar.selectbox(l["specie"], list(especies.keys()))
 slope = st.sidebar.slider(l["slope_label"], 3000, 7500, especies[esp_n]["s"])
@@ -141,7 +146,7 @@ def get_agronomic_data(lat, lon, start, end, rad):
     df = pd.DataFrame([f['properties'] for f in res['features']]).dropna()
     return df, col, p, is_urban
 
-# --- 8. DASHBOARD (PERSISTENCIA VISUAL) ---
+# --- 8. DASHBOARD ---
 if btn_run:
     st.session_state.url_cache = {} 
     with st.spinner("🛰️ Synchronizing..."):
